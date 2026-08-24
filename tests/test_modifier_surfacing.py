@@ -346,6 +346,66 @@ def test_cli_show_prints_modifier(ws, capsys) -> None:
     assert "Amended by" in out and "shown-v2" in out
 
 
+def test_cli_show_unmodified_prints_the_negative_line(ws, capsys) -> None:
+    """A node nothing has moved on from says so, rather than rendering nothing.
+
+    The AX item: on the text surface "checked, clean" and "the stamp did not render"
+    were the same screen, on the one verb whose job is telling a reader whether the
+    axiom above is still the last word. `get_modifiers` returns only present keys, so
+    absence is unambiguous to the caller and invisible to the reader.
+    """
+    config, m = ws
+    _rec(m, "untouched")
+    capsys.readouterr()
+    cmd_show(config, "untouched")
+    out = capsys.readouterr().out
+    assert "Modified by:" in out and "none" in out
+    # The negative line stands in for the whole family, so none of the four may
+    # appear beside it — a stamp rendered next to "none" is the defect inverted.
+    for label in ("Amended by", "Narrowed by", "Corrected by", "Superseded by"):
+        assert label not in out
+
+
+def test_cli_show_modified_omits_the_negative_line(ws, capsys) -> None:
+    """The negative line is mutually exclusive with any real stamp — never both."""
+    config, m = ws
+    _rec(m, "moved")
+    _rec(m, "moved-v2", amends="moved")
+    capsys.readouterr()
+    cmd_show(config, "moved")
+    out = capsys.readouterr().out
+    assert "Amended by" in out and "moved-v2" in out
+    assert "Modified by:" not in out
+
+
+def test_cli_show_negative_line_is_text_only_json_still_omits(ws, capsys) -> None:
+    """The text fix does not leak into the payload.
+
+    `show --json` shares `display.show_payload` structurally with the `show_node` MCP
+    tool, so nulling absent modifier keys there would be a cross-surface payload shape
+    change — out of scope for a text render item. Absent-key stays the JSON answer.
+    """
+    config, m = ws
+    _rec(m, "clean")
+    capsys.readouterr()
+    cmd_show(config, "clean", as_json=True)
+    out = json.loads(capsys.readouterr().out)
+    for key in MODIFIER_EDGE_KEYS.values():
+        assert key not in out
+    assert "Modified by" not in json.dumps(out)
+
+
+def test_cli_show_oq_unmodified_prints_the_negative_line(ws, capsys) -> None:
+    """The line is kind-agnostic: an unmodified open question gets it too."""
+    config, m = ws
+    store = GraphStore(config.db_path)
+    _commit_oq(store, "still-open")
+    capsys.readouterr()
+    cmd_show(config, "still-open")
+    out = capsys.readouterr().out
+    assert "Modified by:" in out and "none" in out
+
+
 def test_cli_show_resolves_superseded_not_reused_slug(ws, capsys) -> None:
     """The R2 trap: a superseded slug with NO active bearer (the superseder carries a
     DISTINCT slug) resolves marked-superseded instead of 404-ing — `show` as a vector."""

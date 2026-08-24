@@ -1373,9 +1373,28 @@ def cmd_show(config: MitosConfig, ident: str, as_json: bool = False) -> None:
     print(f"\n[{node['kind'].upper()}] {node['slug']}")
     print(f"ID:           {node['id']}")
     print(f"State:        {state}")
+    # The negative line is the item: a node nothing has moved on from rendered
+    # NOTHING here, so "checked, clean" and "the stamp did not render" were the same
+    # screen — and this verb's whole job is telling a reader whether the axiom above
+    # is still the last word. `get_modifiers` returns only the keys that are present,
+    # so absence is unambiguous to the caller but invisible to the reader.
+    #
+    # `Modified by:` rather than the ledger's `Modifiers:` — it negates the four
+    # labels this loop prints (`Amended by`, `Narrowed by`, `Corrected by`,
+    # `Superseded by`) in their own words, and `Modifiers:` would sit two lines from
+    # `Mechanisms:` as a same-length, same-shaped confusable on a surface whose
+    # reported defects are already about misread lines.
+    #
+    # Text only. The `--json` arm omits absent keys rather than nulling them, and
+    # matching it here would be a payload shape change on `show_payload` — shared
+    # structurally with the `show_node` MCP tool, so not this item's to make.
+    stamped = False
     for key in MODIFIER_EDGE_KEYS.values():
         if modifiers.get(key):
+            stamped = True
             print(f"{(key.replace('_', ' ').capitalize() + ':'):14}{', '.join(modifiers[key])}")
+    if not stamped:
+        print(f"{'Modified by:':14}none")
     if node.get("date"):
         print(f"Date:         {node['date']}")
     if node.get("title"):
@@ -2396,30 +2415,58 @@ def _fmt_k(n: int) -> str:
     return f"~{round(n / 1000)}k" if n >= 1000 else f"~{n}"
 
 
-def _print_overflow_detail(overflows: List[Dict[str, Any]]) -> None:
+def _print_overflow_detail(overflows: List[Dict[str, Any]], *,
+                           verbose: bool = False) -> None:
     """Prints the size-ceiling breakdown for over-budget context files (status surface).
 
     The detailed counterpart to the one-line nudge the write path shows: per file, its
-    char/estimated-token size and the largest decisions in it, so an author knows what
-    to re-scope. Informational only — never a readiness blocker.
+    char/estimated-token size and — under ``verbose`` — the largest decisions in it, so
+    an author knows what to re-scope. Informational only — never a readiness blocker.
+
+    **Why the per-file breakdown is gated and the per-file size line is not.** The
+    ceiling is a corpus-growth fact, so past some size every run of the report carries
+    it, and unwrapping each over-ceiling file into its largest decisions buries the
+    readiness verdict the report exists to give. (Measured on mitos-pub at 0.16.0: 8
+    files over, 48 lines of report; the count only ever grows, which is the point —
+    a figure stated as current here would be stale by the next release.) The size line
+    per file is the signal — it names the file and how far over it is, which is what a
+    routine or cron read is checking. The slug-level breakdown is what you want exactly
+    once, when you sit down to re-scope, and ``-v`` is the moment you say so.
+
+    The withheld detail is **announced, never silent**: an unmentioned ``-v`` is a
+    capability the surface has and does not admit to, which is the same defect class
+    the size ceiling itself was reported as. The JSON encoding is deliberately not
+    gated — ``scope_overflow`` carries every record with its ``top_decisions`` on both
+    verbosities, because a machine payload that changes shape with a text-verbosity
+    flag is a payload no consumer can rely on.
 
     Args:
         overflows: Overflow records from ``overflow_report`` (largest file first).
+        verbose: Render each file's largest-decisions breakdown. Off by default.
     """
     n = len(overflows)
     noun = "file" if n == 1 else "files"
     print(f"\n  ⚠ {n} rendered axiom {noun} over the size ceiling "
           f"(informational — not a readiness blocker):")
+    withheld = False
     for o in overflows:
         print(f"      - {o['name']}: {o['chars']:,} chars "
               f"({_fmt_k(o['est_tokens'])} tokens, ceiling {o['threshold_chars']:,})")
         top = o.get("top_decisions", [])
-        if top:
+        if not top:
+            continue
+        if verbose:
             print("          largest decisions:")
             for d in top:
                 print(f"            • {d['slug']}  ({d['chars']:,} chars)")
-    print("    These context files grow with the corpus — re-scope the largest decisions "
-          "above, or split a broad scope.")
+        else:
+            withheld = True
+    if withheld:
+        # Named on the default path only: under `-v` the breakdown is already above,
+        # and re-offering the flag that produced it reads as a failed render.
+        print("    Re-run with `-v` for the largest decisions in each file.")
+    print("    These context files grow with the corpus — re-scope the largest "
+          "decisions in them, or split a broad scope.")
 
 
 def _graph_behind_buffer(db_path: str) -> bool:
@@ -2706,7 +2753,7 @@ def cmd_status_overview(as_json: bool = False) -> int:
 
 
 def cmd_status(workspace_dir: str, as_json: bool = False, *,
-               project: Optional[str] = None) -> int:
+               project: Optional[str] = None, verbose: bool = False) -> int:
     """Reports whether Mitos is set up for a project, and what (if anything) is missing.
 
     Designed to be run by a human OR an LLM in a new project: it answers "is Mitos
@@ -3170,7 +3217,7 @@ def cmd_status(workspace_dir: str, as_json: bool = False, *,
             f"not an error."
         )
     if overflows:
-        _print_overflow_detail(overflows)
+        _print_overflow_detail(overflows, verbose=verbose)
     if divergence_report is not None:
         _print_divergence_rung(divergence_report, project=config.project)
     if graph_behind:
@@ -5218,7 +5265,10 @@ def _answer_workspace_optional_verb(args: argparse.Namespace,
     # precedent).
     root = os.path.abspath(target.root)
     if args.command == "status":
-        return cmd_status(root, as_json=args.as_json, project=target.name)
+        # `getattr`, unlike main()'s status-only branch: this helper also answers
+        # `agent-block`, whose namespace carries no `verbose`.
+        return cmd_status(root, as_json=args.as_json, project=target.name,
+                          verbose=getattr(args, "verbose", False))
     return cmd_agent_block(root, check=args.check)
 
 
@@ -5813,6 +5863,10 @@ def _build_parser() -> argparse.ArgumentParser:
                                "projects`) or an absolute path. Omit it for the "
                                "machine-wide overview of every registered project.")
     status_p.add_argument("--json", action="store_true", dest="as_json", help="Emit a machine-readable JSON report.")
+    status_p.add_argument("-v", "--verbose", action="store_true",
+                          help="Expand the size-ceiling breakdown to the largest "
+                               "decisions in each over-ceiling file. Text only — the "
+                               "`--json` payload always carries them.")
 
     # set-key — store an API key globally (all projects) or for this project
     sk_p = subparsers.add_parser(
@@ -6167,7 +6221,7 @@ def main() -> None:
             # the boundary, passed into the callee (2a's `cwd_hint_name`, 4a's D5),
             # so the report cannot name the project wrong on a symlinked route.
             sys.exit(cmd_status(config.workspace_dir, as_json=args.as_json,
-                                project=target.name))
+                                project=target.name, verbose=args.verbose))
         elif args.command == "restore-source":
             sys.exit(cmd_restore_source(
                 config, slug=args.slug, all_graph_only=args.all_graph_only,
