@@ -29,7 +29,16 @@ requires-python = ">=3.13"     # UCD 15.1.0 goldens (§11) + SQLite 3.37+ for ST
 dependencies = [
     "filelock>=3.0.0",
     "google-genai>=1.66.0",
-    "anthropic>=0.84.0",
+    # Ceilinged below 1.0 for the same reason as `mcp`, and discovered the same
+    # way: `anthropic` 1.0.0 removes `temperature` from `Messages.create()`
+    # (sampling params moved into `output_config`), so a `pipx install --force`
+    # against an unceilinged floor silently upgrades the dogfood build and every
+    # `mitos check` dies at `Fatal Unexpected Error: Messages.create() got an
+    # unexpected keyword argument 'temperature'` — the LLM-judged layer gone,
+    # exit 2, on an install that reports READY. Measured 2026-08-25. The 1.x port
+    # (conflict_judgment.py's call site + the 0.3 temperature floor's new home)
+    # is a ROADMAP item, not a dependency bump.
+    "anthropic>=0.84.0,<1",
     # Ceilinged below 2.0: `mcp` 2.x drops `mcp.server.fastmcp` (renamed to
     # `mcp.server.mcpserver`, exporting `MCPServer`), which `mcp_server.py`
     # imports at module scope — so an unceilinged floor makes `mitos serve`
