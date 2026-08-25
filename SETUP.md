@@ -35,7 +35,7 @@ questions:
 
 ## Prerequisites (once per machine)
 
-- **Mitos installed** — the recommended global install is **pipx**: `pipx install git+https://github.com/dovahkiin-v/mitos` (isolated, on PATH). Or `pip install git+https://github.com/dovahkiin-v/mitos` into a venv; or `pip install -e .` from a clone if you're hacking on Mitos. *(A PyPI release — `pip install mitos-adr` — is planned but not yet published.)*
+- **Mitos installed** — the recommended global install is **pipx**: `pipx install mitos-adr` (isolated, on PATH). Or `pip install mitos-adr` into a venv; or `pip install -e .` from a clone if you're hacking on Mitos.
   - **Updating:** `pipx install --force git+https://github.com/dovahkiin-v/mitos` (use `--force`, not `pipx upgrade` — a git install can otherwise no-op). Mitos checks for a newer version at most once a day and prints a one-line nudge on stderr when one exists; silence it with `MITOS_NO_UPDATE_CHECK=1` in the shell environment.
 - **Docker** — for Mitos's Qdrant.
 - **A Google Gemini API key** — <https://aistudio.google.com/app/apikey> — required; it covers embeddings and synthesis.

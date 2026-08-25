@@ -6,7 +6,7 @@
      is rejected 400. tests/test_packaging.py locks the pair. -->
 
 
-![Status: Alpha](https://img.shields.io/badge/status-alpha-orange) ![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue) ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)
+![Status: Alpha](https://img.shields.io/badge/status-alpha-orange) ![PyPI](https://img.shields.io/pypi/v/mitos-adr) ![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue) ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue) ![MCP Registry](https://img.shields.io/badge/MCP-Registry-purple)
 
 > 🔧 **Early release** — actively developed
 
@@ -15,6 +15,8 @@ When you build software with AI assistants over months, the *reasoning* behind y
 The result: your AI collaborator stays consistent with the calls you've actually made — it stops contradicting a past decision or re-opening a settled question, and your decision record never silently rots.
 
 Under the hood: markdown for humans (`decisions.md` is the source of truth you can always read and grep), a typed graph for the agents (SQLite + a local Qdrant for semantic recall), and an MCP server so agents check precedent before deciding and record decisions as they make them.
+
+Available on [PyPI](https://pypi.org/project/mitos-adr/) and the [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.dovahkiin-v/mitos).
 
 ---
 
@@ -30,7 +32,7 @@ and report the result.
 
 What your agent will end up doing — the same steps a human follows, all in [SETUP.md](SETUP.md) where you can read them first:
 
-- install the `mitos` CLI via pipx, from this repository;
+- install the `mitos` CLI via pipx (from [PyPI](https://pypi.org/project/mitos-adr/) or this repository);
 - start a local Qdrant container (`qdrant/qdrant` on port `7333`, isolated from any Qdrant you already run);
 - register the MCP server once for the whole machine, if it isn't registered already;
 - initialize the project workspace, which also registers the project by name;
@@ -42,7 +44,7 @@ How much your agent asks along the way is governed by your own agent's settings,
 
 The same steps by hand — full detail in **[SETUP.md](SETUP.md)**:
 
-1. **Install** (once per machine): `pipx install git+https://github.com/dovahkiin-v/mitos`
+1. **Install** (once per machine): `pipx install mitos-adr`
 2. **Start Qdrant** (once per machine, shared by all projects): `docker compose up -d` from this repo — mitos runs its own instance on `:7333`, so it never touches a Qdrant you use for other work.
 3. **Register the MCP server** (once per machine, recommended for agents): `claude mcp add --scope user mitos -- mitos serve`. One registration serves every project — see [SETUP.md](SETUP.md) for what it costs, for other harnesses, and for why a leftover per-project `.mcp.json` entry has to go.
 4. **Per project**: `mitos init` from the project root, then `mitos set-key --global <your-Gemini-key>` (one key covers everything; get it at <https://aistudio.google.com/app/apikey>). Gemini is the tested embedding provider today; a multi-provider abstraction is on the roadmap.
