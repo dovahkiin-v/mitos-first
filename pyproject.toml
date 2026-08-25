@@ -14,18 +14,47 @@
 #      package dir, so it MUST be in the wheel.
 
 [build-system]
-# setuptools >=64 is the minimum that supports all three things we rely on:
-# PEP 621 `[project]` metadata + `[tool.setuptools.dynamic]` attr-version (61.0)
-# AND PEP 660 editable installs (64.0, the dev loop's `pip install -e .`).
-# Build-time only — never a runtime dependency. Latest release at migration
-# time was 82.0.1; the floor is the minimum, not a pin.
-requires = ["setuptools>=64"]
+# setuptools >=77 is the minimum that supports all four things we rely on:
+# PEP 621 `[project]` metadata + `[tool.setuptools.dynamic]` attr-version (61.0),
+# PEP 660 editable installs (64.0, the dev loop's `pip install -e .`), AND
+# PEP 639 SPDX `license` string + `license-files` (77.0, the form PyPI renders
+# as a proper license badge). Build-time only — never a runtime dependency.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mitos-adr"            # distribution name (import package is `mitos`); kept on purpose
 dynamic = ["version"]          # read from mitos/__init__.py — NOT a static literal
+description = "Architectural decision memory for LLM-native workflows — markdown for humans, a graph for agents."
+readme = "README.md"
 requires-python = ">=3.13"     # UCD 15.1.0 goldens (§11) + SQLite 3.37+ for STRICT tables ship with 3.13
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+# Maintainer contact is the skyforge.sh address while the repo and PyPI account
+# stay personal (mirrors letterbox ADR-070: durable public contact, recovery on
+# gmail). The K2 guard in test_packaging.py scopes "never skyforge" to
+# [project.urls] only.
+authors = [{ name = "Vinga Luksaite", email = "vinga@skyforge.sh" }]
+keywords = [
+    "adr",
+    "architectural-decisions",
+    "decision-records",
+    "llm",
+    "ai-agents",
+    "mcp",
+    "knowledge-graph",
+    "qdrant",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Documentation",
+    "Operating System :: POSIX",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "filelock>=3.0.0",
     "google-genai>=1.66.0",
@@ -50,6 +79,12 @@ dependencies = [
 
 [project.scripts]
 mitos = "mitos.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dovahkiin-v/mitos"
+Repository = "https://github.com/dovahkiin-v/mitos"
+Documentation = "https://github.com/dovahkiin-v/mitos#readme"
+Issues = "https://github.com/dovahkiin-v/mitos/issues"
 
 [project.optional-dependencies]
 # Test tooling — the single declarative home for it (local dev AND CI install the

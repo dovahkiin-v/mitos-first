@@ -23,6 +23,7 @@ import os
 import socket
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -245,3 +246,69 @@ def test_non_editable_install_real_read_path(built_wheel, tmp_path):
     registry_file = tmp_path / "xdg_config" / "mitos" / "registry.toml"
     assert registry_file.is_file(), "`mitos init` did not write the project registry"
     assert str(workspace.resolve()) in registry_file.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Static metadata guards — no build, no network, fast.
+# ---------------------------------------------------------------------------
+
+def _load_pyproject() -> dict:
+    return tomllib.loads(PROJECT_ROOT.joinpath("pyproject.toml").read_text(encoding="utf-8"))
+
+
+def test_version_is_dynamic_from_dunder() -> None:
+    """K1: version is sourced dynamically from mitos.__version__, never a static literal."""
+    project = _load_pyproject()["project"]
+    assert "version" not in project, (
+        "version must be dynamic — a static literal silently kills the update nudge"
+    )
+    assert "version" in project.get("dynamic", [])
+    dynamic = _load_pyproject()["tool"]["setuptools"]["dynamic"]
+    assert dynamic["version"] == {"attr": "mitos.__version__"}
+    assert _mitos.__version__ != "0.0.0"
+
+
+def test_project_urls_point_at_personal_repo() -> None:
+    """K2: URLs are the personal dovahkiin-v GitHub, never skyforge-sh."""
+    urls = _load_pyproject()["project"]["urls"]
+    assert urls, "expected a [project.urls] block"
+    joined = " ".join(urls.values()).lower()
+    assert "dovahkiin-v" in joined
+    assert "skyforge" not in joined
+
+
+def test_keywords_present() -> None:
+    """K4: keywords aid discovery; must be non-empty."""
+    keywords = _load_pyproject()["project"].get("keywords", [])
+    assert keywords, "expected a non-empty keywords list"
+
+
+def test_console_script_entry_point_intact() -> None:
+    scripts = _load_pyproject()["project"]["scripts"]
+    assert scripts.get("mitos") == "mitos.cli:main"
+
+
+def test_requires_python_floor() -> None:
+    assert _load_pyproject()["project"]["requires-python"] == ">=3.13"
+
+
+def test_license_is_spdx_expression() -> None:
+    """K3: PEP 639 SPDX string form; no deprecated License :: classifier."""
+    project = _load_pyproject()["project"]
+    assert project["license"] == "Apache-2.0"
+    classifiers = project.get("classifiers", [])
+    assert not any(c.startswith("License ::") for c in classifiers)
+
+
+def test_description_present() -> None:
+    assert _load_pyproject()["project"].get("description"), "expected a non-empty description"
+
+
+def test_readme_wired() -> None:
+    assert _load_pyproject()["project"].get("readme") == "README.md"
+
+
+def test_development_status_matches_readme_badge() -> None:
+    classifiers = _load_pyproject()["project"].get("classifiers", [])
+    status = [c for c in classifiers if c.startswith("Development Status")]
+    assert status == ["Development Status :: 3 - Alpha"]
