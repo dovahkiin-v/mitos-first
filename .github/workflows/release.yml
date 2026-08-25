@@ -1,0 +1,98 @@
+name: release
+
+# Publishes to PyPI via Trusted Publishing (OIDC) — no API token is stored in
+# this repo, in a secret, or on any developer machine. PyPI is configured with a
+# pending/active publisher naming this repo, THIS workflow filename, and the
+# `pypi` environment; all four must match or the upload is rejected. Renaming
+# this file breaks publishing until the publisher on PyPI is updated to match.
+#
+# Trigger is a `v*` tag, and `check` refuses to publish unless the tag matches
+# mitos.__version__ exactly. That attribute stays the single source of truth
+# (pyproject reads it dynamically, and the CLI's update check compares against
+# it on `main`) — the tag is an assertion about it, never a second home for it.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  check:
+    name: tag matches mitos.__version__
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      # Read the attribute textually rather than importing the package: an
+      # import would pull the runtime dependencies in just to read a string.
+      - name: Compare tag to __version__
+        run: |
+          version="$(grep -Po '^__version__\s*=\s*"\K[^"]+' mitos/__init__.py)"
+          tag="${GITHUB_REF_NAME#v}"
+          echo "__version__=$version  tag=$tag"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::Tag v$tag does not match mitos.__version__ ($version). Bump the attribute and re-tag."
+            exit 1
+          fi
+
+  build:
+    name: build wheel + sdist
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install build frontend
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      # twine check catches a README that PyPI would refuse to render — a
+      # failure PyPI reports only AFTER the version is uploaded and burned.
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Verify format-spec.md is in the wheel
+        run: |
+          wheel="$(ls dist/mitos_adr-*.whl)"
+          python -c "
+          import zipfile, sys
+          with zipfile.ZipFile('$wheel') as zf:
+              names = zf.namelist()
+              if not any('format-spec.md' in n for n in names):
+                  print('::error::format-spec.md missing from wheel — mitos init will fail on install', file=sys.stderr)
+                  sys.exit(1)
+              print('format-spec.md found in wheel')
+          "
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mitos-adr
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
