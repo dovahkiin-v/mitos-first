@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.dovahkiin-v/mitos",
+  "title": "Mitos",
+  "description": "Architectural decision memory for LLM-native workflows — markdown for humans, a graph for agents.",
+  "repository": {
+    "url": "https://github.com/dovahkiin-v/mitos",
+    "source": "github"
+  },
+  "version": "0.17.2",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mitos-adr",
+      "version": "0.17.2",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}

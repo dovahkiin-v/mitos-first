@@ -1,4 +1,10 @@
 # Mitos
+<!-- mcp-name: io.github.dovahkiin-v/mitos -->
+<!-- ^ MCP Registry ownership proof. The registry reads this out of the PyPI
+     long_description, so it must survive into the published package and must
+     byte-match `name` in server.json. Enforced server-side: a publish without it
+     is rejected 400. tests/test_packaging.py locks the pair. -->
+
 
 ![Status: Alpha](https://img.shields.io/badge/status-alpha-orange) ![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue) ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)
 
