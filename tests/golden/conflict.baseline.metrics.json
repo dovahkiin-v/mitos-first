@@ -1,12 +1,13 @@
 {
   "provenance": {
     "embedding_model": "gemini-embedding-2",
-    "mitos_version": "0.5.21",
-    "commit_sha": "c29127f4ddc243f1f8b036bcf353383cbb3522ce",
-    "dirty_tree": false,
+    "mitos_version": "0.16.1",
+    "commit_sha": "ab7480a78c0973b8deba2dfe45c13f725d9adbe9",
+    "dirty_tree": true,
     "judgment_model": "SONNET",
-    "prompt_version": "conflict-tenability-v1",
-    "timestamp": "2026-07-03T02:44:55.050753+00:00"
+    "judgment_model_id": "claude-sonnet-4-6",
+    "prompt_version": "conflict-tenability-v2",
+    "timestamp": "2026-08-25T12:24:37.439252+00:00"
   },
   "params": {
     "floor": 0.76,

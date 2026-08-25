@@ -286,7 +286,6 @@ _ENV_SKIP_MARKER = "not a code defect"
 LIVE_MODULES: tuple[str, ...] = (
     "test_conflict_eval_live.py",
     "test_retrieval_live.py",
-    "test_conflict_dogfood_live.py",
     "test_check_hook_recipe.py",
     "test_integration_live.py",
     "test_pathologies_live.py",

@@ -1,0 +1,16 @@
+{
+  "stop_reason": "max_tokens",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_01WBNHPtGmrKiyccphS157ba",
+      "name": "record_verdicts",
+      "input": {}
+    }
+  ],
+  "usage": {
+    "input_tokens": 2908,
+    "output_tokens": 50
+  },
+  "model": "claude-sonnet-4-6"
+}

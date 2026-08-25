@@ -4325,6 +4325,9 @@ def _check_degradation_summary(degradations: Tuple[str, ...]) -> str:
         "collection_missing": (
             "the vector collection does not exist — run `mitos reconcile` to rebuild it"
         ),
+        "judgment_truncated": (
+            "the judge's response was truncated (max_tokens exceeded)"
+        ),
     }
     return "; ".join(words[token] for token in degradations)
 
@@ -4677,6 +4680,7 @@ def _persist_staged_batch(
             token_cache_read=execution.token_cache_read,
             token_cache_creation=execution.token_cache_creation,
             elapsed_ms=execution.elapsed_ms,
+            stop_reason=execution.stop_reason,
         )
         proposal = result.proposal_input
         rows: List[ConflictCheckRow] = []
@@ -4725,6 +4729,9 @@ _STAGED_DEGRADATION_WORDS = {
     "telemetry_write": "some results could not be recorded",
     "collection_missing": (
         "the vector collection does not exist — run `mitos reconcile` to rebuild it"
+    ),
+    "judgment_truncated": (
+        "the judge's response was truncated (max_tokens exceeded)"
     ),
 }
 
@@ -4975,6 +4982,8 @@ def _run_staged_check(
                         degraded.add("collection_missing")
                 else:
                     degraded.add("judgment")
+                    if result.reason is ConflictUnavailableReason.JUDGMENT_TRUNCATED:
+                        degraded.add("judgment_truncated")
                 break
             nodes_swept += 1
             pairs_judged_fresh += len(result.judged_pairs)

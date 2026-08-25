@@ -132,6 +132,7 @@ class ConflictUnavailableReason(Enum):
     JUDGMENT = "judgment_unavailable"          # A malformed judgment batch (3a parse) — never a partial batch.
     JUDGMENT_TIMEOUT = "judgment_timeout"      # The 3b executor timed out OR hit any Anthropic error (fail-open, D4).
     COLLECTION_MISSING = "collection_missing"  # Qdrant is up; the collection does not exist (1b) — heals with `mitos reconcile`.
+    JUDGMENT_TRUNCATED = "judgment_truncated"  # The judge's response was truncated at max_tokens (tool-use budget exceeded).
 
 
 # Every reason that means "semantic recall went dark", as opposed to "the judge went
@@ -151,6 +152,18 @@ SEMANTIC_SUBSTRATE_REASONS: Tuple[ConflictUnavailableReason, ...] = (
 # enumerate-the-class discipline as ``sync._PREFLIGHT_DISPOSITIONS``).
 JUDGMENT_REASONS: Tuple[ConflictUnavailableReason, ...] = (
     ConflictUnavailableReason.JUDGMENT,
+    ConflictUnavailableReason.JUDGMENT_TIMEOUT,
+    ConflictUnavailableReason.JUDGMENT_TRUNCATED,
+)
+
+# Defect-vs-environment partition: a reason that means "the code is broken" (test must
+# fail) vs "the world is down" (test may skip). Declared so the discriminator has a
+# fact to read, not an else branch to trust.
+JUDGMENT_DEFECT_REASONS: Tuple[ConflictUnavailableReason, ...] = (
+    ConflictUnavailableReason.JUDGMENT,
+    ConflictUnavailableReason.JUDGMENT_TRUNCATED,
+)
+JUDGMENT_ENVIRONMENT_REASONS: Tuple[ConflictUnavailableReason, ...] = (
     ConflictUnavailableReason.JUDGMENT_TIMEOUT,
 )
 
@@ -471,7 +484,7 @@ def candidate_payload(candidate: "Candidate", *, brief: bool = False) -> "Dict[s
 # ANY change to the rendered prompt (system prefix, user-block shape, or schema) so
 # a corpus of judgments stays attributable to the exact prompt that produced it —
 # and regenerate the snapshot fixture in the same change (the RF-3 tripwire).
-CONFLICT_PROMPT_VERSION = "conflict-tenability-v1"
+CONFLICT_PROMPT_VERSION = "conflict-tenability-v2"
 
 # The explicit MI-9 absent-markers. A global decision has ``scope == []`` (zero
 # ``node_scopes`` rows) and an axiom without recorded anti-knowledge has
@@ -943,7 +956,7 @@ class JudgmentExecution:
     it; ``model_alias`` rides here too so each row stamps the P19 alias, not a raw id).
 
     Attributes:
-        raw_text: The model's response text, verbatim (parsed by the facade, not here).
+        raw_text: The serialized verdict array (``json.dumps`` of the tool_use input).
         batch_id: Minted once per call in the executor (W8); shared by every
             ``conflict_checks`` row 5b writes for this batch (the batch⋈checks join key).
         model_alias: The family+tier alias (``"SONNET"``) — never a versioned id (P19).
@@ -953,6 +966,8 @@ class JudgmentExecution:
             (RF-3, the sync surface); a ``None`` usage field is coerced to 0 at the read.
         token_cache_creation: ``usage.cache_creation_input_tokens`` — 0 / None-coerced likewise.
         elapsed_ms: Wall-clock of the ``messages.create`` call (a ``time.perf_counter`` delta).
+        stop_reason: The API ``stop_reason`` from the response (``"tool_use"``,
+            ``"end_turn"``, …). Rides through to ``JudgmentBatch`` for telemetry.
     """
 
     raw_text: str
@@ -963,6 +978,7 @@ class JudgmentExecution:
     token_cache_read: int
     token_cache_creation: int
     elapsed_ms: int
+    stop_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)

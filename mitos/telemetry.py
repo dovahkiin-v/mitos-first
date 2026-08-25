@@ -202,6 +202,9 @@ class JudgmentBatch:
         token_cache_read: Cache-read tokens billed for the batched call.
         token_cache_creation: Cache-creation tokens billed for the batched call.
         elapsed_ms: Wall-clock latency of the batched call, in milliseconds.
+        stop_reason: The API ``stop_reason`` from the response (``"tool_use"``,
+            ``"max_tokens"``, …). Nullable TEXT — ``None`` on pre-rung-4 rows and
+            when the executor returns ``Unavailable`` before constructing this object.
     """
 
     batch_id: str
@@ -211,6 +214,7 @@ class JudgmentBatch:
     token_cache_read: int
     token_cache_creation: int
     elapsed_ms: int
+    stop_reason: Optional[str] = None
 
     def to_params(self) -> Tuple:
         """Produces the INSERT parameter tuple in ``_JUDGMENT_BATCHES_COLUMNS`` order.
@@ -226,6 +230,7 @@ class JudgmentBatch:
             self.token_cache_read,
             self.token_cache_creation,
             self.elapsed_ms,
+            self.stop_reason,
         )
 
 
@@ -625,10 +630,18 @@ def _commentary_audit_schema(conn: sqlite3.Connection) -> None:
 # telemetry migration extends this literal or ``.append((3, ...))`` after it —
 # never a second binding (a rebind is invisible to a def-time-bound default arg;
 # the graph ladder learned this).
+def _judgment_batches_add_stop_reason(conn: "sqlite3.Connection") -> None:
+    """Rung 4: ``judgment_batches.stop_reason`` — the API response's stop reason."""
+    conn.execute(
+        "ALTER TABLE judgment_batches ADD COLUMN stop_reason TEXT;"
+    )
+
+
 TELEMETRY_MIGRATION_STEPS: List[MigrationStep] = [
     (1, _conflict_checks_schema),
     (2, _check_attribution_schema),
     (3, _commentary_audit_schema),
+    (4, _judgment_batches_add_stop_reason),
 ]
 
 
@@ -670,6 +683,7 @@ _JUDGMENT_BATCHES_COLUMNS: Tuple[str, ...] = (
     "token_cache_read",
     "token_cache_creation",
     "elapsed_ms",
+    "stop_reason",
 )
 
 # INSERT order == the ``check_runs`` DDL order == the ``test_check_runs_column_contract``

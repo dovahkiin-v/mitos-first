@@ -527,6 +527,7 @@ def test_upgrade_backfills_surface_and_null_model_id(tmp_path) -> None:
     assert row_after.pop("surface") == "sync"  # the DEFAULT backfill
     assert row_after == row_before  # every pre-existing field byte-unchanged
     assert batch_after.pop("model_id") is None  # pre-rung-2 provenance is unknowable
+    assert batch_after.pop("stop_reason") is None  # pre-rung-4 rows have no stop_reason
     assert batch_after == batch_before
 
     # Stretch pin: fresh-install and upgraded-install execute the identical DDL
@@ -1217,7 +1218,7 @@ def test_commentary_audit_table_exists_at_rung_three(tmp_path) -> None:
     """The audit table ships as a plain additive rung on telemetry's own ladder."""
     from mitos.telemetry import TELEMETRY_MIGRATION_STEPS, TelemetryStore
 
-    assert [rung for rung, _fn in TELEMETRY_MIGRATION_STEPS] == [1, 2, 3]
+    assert [rung for rung, _fn in TELEMETRY_MIGRATION_STEPS] == [1, 2, 3, 4]
 
     path = str(tmp_path / "telemetry.sqlite")
     TelemetryStore(path)

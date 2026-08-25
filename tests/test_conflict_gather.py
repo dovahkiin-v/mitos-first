@@ -540,3 +540,18 @@ def test_both_bucketing_surfaces_bind_the_shared_constant() -> None:
             f"{module.__name__} re-lists the semantic-substrate members instead of "
             "binding SEMANTIC_SUBSTRATE_REASONS"
         )
+
+
+def test_judgment_defect_environment_partition_is_exhaustive() -> None:
+    """Every JUDGMENT_REASONS member is classified as either defect or environment."""
+    from mitos.conflict import (
+        JUDGMENT_DEFECT_REASONS,
+        JUDGMENT_ENVIRONMENT_REASONS,
+        JUDGMENT_REASONS,
+    )
+
+    defect = set(JUDGMENT_DEFECT_REASONS)
+    environment = set(JUDGMENT_ENVIRONMENT_REASONS)
+    assert defect | environment == set(JUDGMENT_REASONS)
+    assert defect & environment == set()
+    assert defect and environment

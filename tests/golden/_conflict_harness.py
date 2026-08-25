@@ -249,8 +249,7 @@ def run_conflict_eval(
             surface_threshold=surface_threshold,
         )
         if isinstance(result, Unavailable):
-            # Environmental degradation (embedding / vector-store / judge timeout-or-5xx):
-            # NOT a measured outcome. Hand it back — the caller turns it into a loud skip.
+            # Hand it back — the caller discriminates defect from environment.
             return result
 
         # Stamp the judge alias from the first live execution (P19-clean — the public
@@ -269,9 +268,19 @@ def run_conflict_eval(
     }
     calibration = confidence_calibration_curve(outcomes)
 
+    judgment_model_id = None
+    if judgment_model is not None:
+        try:
+            from mitos.models import get_model_id
+            judgment_model_id = get_model_id(judgment_model)
+        except ValueError:
+            pass
+
     return {
         "provenance": H.provenance(
-            judgment_model=judgment_model, prompt_version=CONFLICT_PROMPT_VERSION
+            judgment_model=judgment_model,
+            prompt_version=CONFLICT_PROMPT_VERSION,
+            judgment_model_id=judgment_model_id,
         ),
         "params": {
             "floor": floor,
@@ -679,9 +688,18 @@ def run_corpus_check_eval(
         ],
     }
 
+    probe_model_id = None
+    try:
+        from mitos.models import get_model_id
+        probe_model_id = get_model_id(plan.model_alias)
+    except ValueError:
+        pass
+
     report = {
         "provenance": H.provenance(
-            judgment_model=plan.model_alias, prompt_version=CONFLICT_PROMPT_VERSION
+            judgment_model=plan.model_alias,
+            prompt_version=CONFLICT_PROMPT_VERSION,
+            judgment_model_id=probe_model_id,
         ),
         "params": {
             "floor": floor,

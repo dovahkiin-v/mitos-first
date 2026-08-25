@@ -459,9 +459,15 @@ def test_the_embedding_override_from_the_targets_env_reaches_the_provider(
 
 
 def _fake_message(text: str) -> MagicMock:
-    """A fake `messages.create` return — `.content[0].text` plus a four-attr usage."""
+    """A fake `messages.create` return with a tool_use block carrying parsed verdicts."""
+    import json as _json
+    verdicts = _json.loads(text)
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.input = {"verdicts": verdicts}
     msg = MagicMock()
-    msg.content = [MagicMock(text=text)]
+    msg.content = [tool_block]
+    msg.stop_reason = "tool_use"
     msg.usage = MagicMock(
         input_tokens=120, output_tokens=45,
         cache_read_input_tokens=0, cache_creation_input_tokens=0,

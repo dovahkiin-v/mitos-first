@@ -72,10 +72,16 @@ def _fake_message(
     output_tokens: int = 45,
     cache_read: Optional[int] = 0,
     cache_creation: Optional[int] = 0,
+    stop_reason: str = "tool_use",
 ) -> MagicMock:
-    """A fake ``messages.create`` return — ``.content[0].text`` + a ``.usage`` with four attrs."""
+    """A fake ``messages.create`` return with a tool_use block carrying parsed verdicts."""
+    verdicts = json.loads(text)
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.input = {"verdicts": verdicts}
     msg = MagicMock()
-    msg.content = [MagicMock(text=text)]
+    msg.content = [tool_block]
+    msg.stop_reason = stop_reason
     msg.usage = MagicMock(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -132,6 +138,8 @@ def test_call_shape_mirrors_importer_plus_system_timeout_and_no_retries() -> Non
     assert kwargs["system"] == "SYSTEM-PREFIX"
     assert kwargs["messages"] == [{"role": "user", "content": "USER-BLOCK"}]
     assert "max_tokens" in kwargs and isinstance(kwargs["max_tokens"], int)
+    assert kwargs["tools"] and kwargs["tools"][0]["name"] == "record_verdicts"
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "record_verdicts"}
 
 
 def test_timeout_default_is_the_conflict_llm_timeout_constant() -> None:
@@ -148,7 +156,7 @@ def test_timeout_default_is_the_conflict_llm_timeout_constant() -> None:
 # --------------------------------------------------------------------------- #
 
 def test_happy_path_returns_execution_with_raw_text_metrics_and_batch_id() -> None:
-    """A successful call yields the raw text, provenance, the four token counts, elapsed_ms."""
+    """A successful call yields serialized verdicts, provenance, token counts, elapsed_ms."""
     message = _fake_message(
         text='[{"slug": "x", "rationale": "r", "tenable_together": true, "confidence": 0.9}]',
         input_tokens=200,
@@ -161,7 +169,9 @@ def test_happy_path_returns_execution_with_raw_text_metrics_and_batch_id() -> No
     result = execute_judgment(_prompt(), client=client)
 
     assert isinstance(result, JudgmentExecution)
-    assert result.raw_text == message.content[0].text
+    assert json.loads(result.raw_text) == [
+        {"slug": "x", "rationale": "r", "tenable_together": True, "confidence": 0.9}
+    ]
     assert isinstance(result.batch_id, str) and result.batch_id  # non-empty.
     assert result.model_alias == "SONNET"
     assert result.token_input == 200
@@ -224,6 +234,41 @@ def test_anthropic_errors_map_to_unavailable_and_never_raise(exc: BaseException)
     assert isinstance(result, Unavailable)
     assert result.reason is ConflictUnavailableReason.JUDGMENT_TIMEOUT
     assert result.detail  # carries the cause for logs.
+
+
+# --------------------------------------------------------------------------- #
+# 5b. Truncation → Unavailable(JUDGMENT), checked before content
+# --------------------------------------------------------------------------- #
+
+def test_max_tokens_truncation_returns_unavailable_judgment() -> None:
+    """A ``stop_reason='max_tokens'`` maps to ``Unavailable(JUDGMENT)`` with a diagnostic detail."""
+    message = _fake_message(stop_reason="max_tokens")
+    client = _client_returning(message)
+
+    result = execute_judgment(_prompt(), client=client)
+
+    assert isinstance(result, Unavailable)
+    assert result.reason is ConflictUnavailableReason.JUDGMENT_TRUNCATED
+    assert "max_tokens" in result.detail
+    assert "truncated" in result.detail.lower()
+
+
+def test_no_tool_use_block_returns_unavailable_judgment() -> None:
+    """A response with no tool_use block degrades cleanly."""
+    msg = MagicMock()
+    text_block = MagicMock()
+    text_block.type = "text"
+    msg.content = [text_block]
+    msg.stop_reason = "end_turn"
+    msg.usage = MagicMock(input_tokens=100, output_tokens=50,
+                          cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    client = _client_returning(msg)
+
+    result = execute_judgment(_prompt(), client=client)
+
+    assert isinstance(result, Unavailable)
+    assert result.reason is ConflictUnavailableReason.JUDGMENT
+    assert "no tool_use block" in result.detail
 
 
 # --------------------------------------------------------------------------- #

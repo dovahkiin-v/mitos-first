@@ -2004,6 +2004,7 @@ class MitosSyncManager:
                 token_cache_read=execution.token_cache_read,
                 token_cache_creation=execution.token_cache_creation,
                 elapsed_ms=execution.elapsed_ms,
+                stop_reason=execution.stop_reason,
             )
             proposal = result.proposal_input
             rows: List[ConflictCheckRow] = []
@@ -2102,10 +2103,19 @@ class MitosSyncManager:
                 "Semantic recall is unavailable (the vector store or embedding service did "
                 "not respond)"
             )
-        else:
+        elif reason is ConflictUnavailableReason.JUDGMENT_TRUNCATED:
+            what = (
+                "Conflict judgment is unavailable (the judge's response was truncated at "
+                "max_tokens)"
+            )
+        elif reason is ConflictUnavailableReason.JUDGMENT_TIMEOUT:
             what = (
                 "Conflict judgment is unavailable (the judgment model did not respond in "
                 "time)"
+            )
+        else:
+            what = (
+                "Conflict judgment is unavailable (the judgment batch was malformed)"
             )
         print(
             f"\n[Conflict sensor unavailable] {what}. Conflict checking is skipped for the\n"

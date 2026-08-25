@@ -118,10 +118,16 @@ def _skip_if_unavailable(result) -> None:
         result: A `run_conflict_eval` return value.
     """
     if isinstance(result, Unavailable):
+        from mitos.conflict import JUDGMENT_DEFECT_REASONS
+        if result.reason in JUDGMENT_DEFECT_REASONS:
+            pytest.fail(
+                f"conflict facade returned Unavailable(reason={result.reason.value}) — "
+                f"this is a CODE DEFECT, not an environmental fault. "
+                f"detail: {result.detail}"
+            )
         pytest.skip(
             f"conflict facade degraded to Unavailable(reason={result.reason.value}) — "
-            f"environmental (embed/vector-store quota or the live SONNET judge "
-            f"timeout/5xx/quota); NOT a code defect. detail: {result.detail}"
+            f"environmental; NOT a code defect. detail: {result.detail}"
         )
 
 

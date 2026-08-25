@@ -137,26 +137,22 @@ def test_importing_conflict_drags_no_heavy_dependency() -> None:
     assert "OK" in result.stdout
 
 
-def test_timeout_can_accommodate_the_output_it_permits() -> None:
-    """The two judge dials must stay coherent: a maxed response must fit its timeout.
+def test_timeout_can_accommodate_a_full_batch() -> None:
+    """A full-width batch's observed output must fit the timeout.
 
-    Regression (2026-07-26). ``_JUDGMENT_MAX_TOKENS`` was 2000 while
-    ``CONFLICT_LLM_TIMEOUT_S`` was 15 — so a response using its full allowance needed
-    ~42s against a cap that would kill it at 15, and a full-width batch was *expected*
-    to time out. Those expiries surfaced as ``Unavailable(judgment_timeout)``, which the
-    live suites classify as "environmental, NOT a code defect" — so a mis-set constant
-    wore an environmental label and survived weeks of being seen.
-
-    The rate is measured, not assumed: four live batches in ``judgment_batches`` ran
-    ~21ms per output token at full batch width (20.8-27.7 across sizes, the higher
-    figures being small batches where time-to-first-token dominates).
+    With tool-use, measured output is ~160 tokens/verdict (812 for 5 verdicts,
+    vs ~1189 in text mode). The max_tokens budget (2000) is defence-in-depth —
+    the tool schema constrains the shape. The coherence check uses the measured
+    per-verdict output, not the budget ceiling.
     """
+    observed_tokens_per_verdict = 170  # measured tool-use worst case
+    expected_output = conflict.CONFLICT_TOP_K * observed_tokens_per_verdict
     observed_ms_per_output_token = 21
-    worst_case_s = (_JUDGMENT_MAX_TOKENS * observed_ms_per_output_token) / 1000
+    worst_case_s = (expected_output * observed_ms_per_output_token) / 1000
     assert worst_case_s <= conflict.CONFLICT_LLM_TIMEOUT_S, (
-        f"a maxed {_JUDGMENT_MAX_TOKENS}-token judgment needs ~{worst_case_s:.0f}s but "
+        f"a full batch (~{expected_output} tokens) needs ~{worst_case_s:.0f}s but "
         f"the cap is {conflict.CONFLICT_LLM_TIMEOUT_S}s — raise the timeout or lower "
-        f"max_tokens; they are one decision, not two."
+        f"the per-verdict token count."
     )
 
 

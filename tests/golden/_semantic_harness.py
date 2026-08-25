@@ -227,7 +227,9 @@ def _git(*args: str) -> Optional[str]:
 
 
 def provenance(
-    judgment_model: Optional[str] = None, prompt_version: Optional[str] = None
+    judgment_model: Optional[str] = None,
+    prompt_version: Optional[str] = None,
+    judgment_model_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Stamps a run's provenance so metrics are comparable and replayable.
 
@@ -255,6 +257,7 @@ def provenance(
         "commit_sha": _git("rev-parse", "HEAD"),
         "dirty_tree": bool(status) if status is not None else None,
         "judgment_model": judgment_model,
+        "judgment_model_id": judgment_model_id,
         "prompt_version": prompt_version,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

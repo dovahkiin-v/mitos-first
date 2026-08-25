@@ -1263,6 +1263,7 @@ def execute_corpus_check(
             token_cache_read=execution.token_cache_read,
             token_cache_creation=execution.token_cache_creation,
             elapsed_ms=execution.elapsed_ms,
+            stop_reason=execution.stop_reason,
         )
         rows: List[ConflictCheckRow] = []
         for pair, partner_input, judgment in zip(
@@ -1373,6 +1374,7 @@ _DEGRADATION_TOKENS: Tuple[str, ...] = (
     "stale_index",
     "probe_read",
     "collection_missing",
+    "judgment_truncated",
 )
 
 
@@ -1401,6 +1403,9 @@ def run_degradations(result: CheckRunResult) -> Tuple[str, ...]:
       trend query on the shipped token stays complete. Derived from the typed
       reason, not from "any vector fault" — a plain ``VectorStoreError`` still
       produces ``"sweep"`` alone.
+    * ``"judgment_truncated"`` — the judgment was truncated at ``max_tokens``.
+      Emitted alongside ``"judgment"`` (same precedent as ``"collection_missing"``
+      alongside ``"sweep"``).
 
     Args:
         result: The typed run outcome.
@@ -1423,6 +1428,11 @@ def run_degradations(result: CheckRunResult) -> Tuple[str, ...]:
             result.sweep_degraded is not None
             and result.sweep_degraded.reason
             is ConflictUnavailableReason.COLLECTION_MISSING
+        ),
+        "judgment_truncated": (
+            result.judgment_degraded is not None
+            and result.judgment_degraded.reason
+            is ConflictUnavailableReason.JUDGMENT_TRUNCATED
         ),
     }
     return tuple(token for token in _DEGRADATION_TOKENS if present[token])
