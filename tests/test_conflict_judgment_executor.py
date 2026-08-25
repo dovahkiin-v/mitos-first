@@ -58,6 +58,12 @@ def no_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skips the executor's retry backoff sleeps — fake clients resolve instantly."""
+    monkeypatch.setattr("mitos.conflict_judgment.time.sleep", lambda _: None)
+
+
 def _prompt() -> RenderedPrompt:
     """A minimal RenderedPrompt — the executor only reads ``.system`` and ``.user``."""
     return RenderedPrompt(

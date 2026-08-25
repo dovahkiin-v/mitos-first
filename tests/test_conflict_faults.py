@@ -315,7 +315,8 @@ def test_judgment_provoked_one_penalty_flagship(
     _append_decision(config, "entry-one", "The first proposed axiom.")
     _append_decision(config, "entry-two", "The second proposed axiom.")
     _append_decision(config, "entry-three", "The third proposed axiom.")
-    with patch("builtins.input", side_effect=["a", "a", "a"]):
+    with patch("builtins.input", side_effect=["a", "a", "a"]), \
+         patch("mitos.conflict_judgment.time.sleep"):
         manager.perform_sync(auto_accept=False)
 
     out = capsys.readouterr().out
@@ -323,7 +324,9 @@ def test_judgment_provoked_one_penalty_flagship(
     assert "judgment" in out.lower()                        # names the judge, not semantic recall
     assert "semantic recall" not in out.lower()             # the substrate was healthy
     create = client.with_options.return_value.messages.create
-    assert create.call_count == 1  # entry 1 judged once; entries 2 & 3 frozen (the Anthropic call)
+    from mitos.conflict_judgment import _RETRY_BACKOFFS_S
+    expected_attempts = 1 + len(_RETRY_BACKOFFS_S)
+    assert create.call_count == expected_attempts  # entry 1 retried; entries 2 & 3 frozen
     assert vector.queries == 1     # entry 1 gathered once; entries 2 & 3 frozen (the gather)
     for slug in ("entry-one", "entry-two", "entry-three"):
         assert manager.store.get_node_by_slug(slug) is not None  # all three commit

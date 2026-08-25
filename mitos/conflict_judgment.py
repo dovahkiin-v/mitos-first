@@ -24,8 +24,9 @@ a commit). The verdict array is serialized into ``raw_text`` as JSON, so both
 from __future__ import annotations
 
 import json
+import logging
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 from uuid import uuid4
 
 import anthropic
@@ -43,6 +44,13 @@ from mitos.models import get_model_id
 # The model family+tier alias (P19 — never a raw versioned id). Rides on every
 # ``JudgmentExecution`` so 5b stamps each telemetry row's ``model_alias``.
 _JUDGMENT_MODEL_ALIAS = "SONNET"
+
+_log = logging.getLogger(__name__)
+
+# Escalating backoff for transient API errors (429, 5xx, timeouts). Three fast
+# retries, then slower ones to wait out rate-limit windows. The last two 60s
+# waits are the final attempt — if the quota is exhausted, we stop loudly.
+_RETRY_BACKOFFS_S: Tuple[float, ...] = (1, 1, 1, 10, 20, 30, 60, 60)
 
 # Defence-in-depth budget for the tool-use response. The tool schema bounds shape;
 # this bounds length. Measured: tool-use verdicts emit ~160 tokens/verdict (812 for 5),
@@ -100,16 +108,18 @@ def execute_judgment(
     ``raw_text`` as a JSON array — so both ``parse_judgment_response`` consumers (the
     corpus path in ``check.py`` and the sync path in ``conflict.py``) are untouched.
 
-    Retries are disabled via ``client.with_options(max_retries=0, timeout=timeout_s)``
-    so ``CONFLICT_LLM_TIMEOUT_S`` is a **true** wall-clock ceiling. 5b's aggregate
-    breaker owns the retry-vs-trip policy, not the SDK.
+    SDK retries are disabled (``max_retries=0``) so ``CONFLICT_LLM_TIMEOUT_S`` is a
+    true wall-clock ceiling per attempt. Transient errors (429, 5xx, timeouts) are
+    retried with an escalating backoff ladder (``_RETRY_BACKOFFS_S``): 3×1s, then 10s,
+    20s, 30s, 60s, 60s. If every attempt fails, the ``Unavailable`` detail names the
+    error class, the attempt count, and the total elapsed time — so the cause is
+    diagnosable without reading logs.
 
-    Fail-open (plan D4): an :class:`~anthropic.APITimeoutError` and the broader
-    :class:`~anthropic.AnthropicError` (rate-limit, 5xx, connection) both map to
-    ``Unavailable(JUDGMENT_TIMEOUT)``. A ``stop_reason='max_tokens'`` maps to
-    ``Unavailable(JUDGMENT)`` — checked BEFORE touching ``message.content``, since a
-    truncated forced-tool response can carry an incomplete or absent ``tool_use``
-    block. The executor never raises past this seam and never blocks the commit.
+    Fail-open (plan D4): transient errors map to ``Unavailable(JUDGMENT_TIMEOUT)``.
+    ``stop_reason='max_tokens'`` maps to ``Unavailable(JUDGMENT_TRUNCATED)`` — checked
+    BEFORE touching ``message.content``, since a truncated forced-tool response can
+    carry an incomplete or absent ``tool_use`` block. The executor never raises past
+    this seam and never blocks the commit.
 
     Args:
         prompt: The rendered judgment prompt (from 3a's ``render_judgment_prompt``); its
@@ -127,38 +137,58 @@ def execute_judgment(
     Returns:
         A :class:`~mitos.conflict.JudgmentExecution` (raw text + batch_id + usage + elapsed)
         on success, or an :class:`~mitos.conflict.Unavailable` with
-        ``reason=JUDGMENT_TIMEOUT`` on a timeout or any Anthropic error.
+        ``reason=JUDGMENT_TIMEOUT`` on a timeout or any Anthropic error after all
+        retries are exhausted.
     """
     # Mint the batch id up front (W8) — one per batched call, shared by every
     # ``conflict_checks`` row 5b writes for this batch. A plain unique ``str``.
     batch_id = uuid4().hex
 
+    resolved_model = (
+        model_id if model_id is not None
+        else get_model_id(_JUDGMENT_MODEL_ALIAS)
+    )
+    create_kwargs = dict(
+        model=resolved_model,
+        max_tokens=_JUDGMENT_MAX_TOKENS,
+        temperature=CONFLICT_JUDGMENT_TEMPERATURE,
+        system=prompt.system,
+        messages=[{"role": "user", "content": prompt.user}],
+        tools=[_VERDICT_TOOL],
+        tool_choice={"type": "tool", "name": "record_verdicts"},
+    )
+
+    last_error: Optional[Exception] = None
+    attempts = 0
     started = time.perf_counter()
-    try:
-        message = client.with_options(
-            max_retries=0, timeout=timeout_s
-        ).messages.create(
-            model=(
-                model_id if model_id is not None
-                else get_model_id(_JUDGMENT_MODEL_ALIAS)
+
+    for attempt_backoff in (0, *_RETRY_BACKOFFS_S):
+        if attempt_backoff > 0:
+            _log.info(
+                "judgment retry %d/%d after %s — waiting %.0fs",
+                attempts, len(_RETRY_BACKOFFS_S), last_error, attempt_backoff,
+            )
+            time.sleep(attempt_backoff)
+        attempts += 1
+        try:
+            message = client.with_options(
+                max_retries=0, timeout=timeout_s
+            ).messages.create(**create_kwargs)
+            break  # success
+        except anthropic.APITimeoutError as exc:
+            last_error = exc
+        except anthropic.AnthropicError as exc:
+            last_error = exc
+    else:
+        total_s = time.perf_counter() - started
+        return Unavailable(
+            reason=ConflictUnavailableReason.JUDGMENT_TIMEOUT,
+            detail=(
+                f"judgment failed after {attempts} attempts over {total_s:.0f}s — "
+                f"last error: {last_error}"
             ),
-            max_tokens=_JUDGMENT_MAX_TOKENS,
-            temperature=CONFLICT_JUDGMENT_TEMPERATURE,
-            system=prompt.system,  # static cache-anchored prefix; cache_control OFF (RF-3).
-            messages=[{"role": "user", "content": prompt.user}],
-            tools=[_VERDICT_TOOL],
-            tool_choice={"type": "tool", "name": "record_verdicts"},
         )
-    except anthropic.APITimeoutError as exc:
-        return Unavailable(
-            reason=ConflictUnavailableReason.JUDGMENT_TIMEOUT,
-            detail=f"judgment call timed out after {timeout_s}s: {exc}",
-        )
-    except anthropic.AnthropicError as exc:
-        return Unavailable(
-            reason=ConflictUnavailableReason.JUDGMENT_TIMEOUT,
-            detail=f"anthropic error: {exc}",
-        )
+
     elapsed_ms = int((time.perf_counter() - started) * 1000)
 
     # Truncation check BEFORE touching content — a forced-tool response truncated at

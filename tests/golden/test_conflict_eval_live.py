@@ -673,3 +673,72 @@ def test_corpus_reuse_determinism_and_scalar_law(conflict_index):
             f"delete pin stays known, exit {check.exit_code_for(r3)} "
             f"(novelty-driven, no degradation)"
         )
+
+
+# =========================================================================== #
+# P4c — Live canary: one corpus-realistic batch, cheap (~$0.03).
+#
+# The middle tier between the $0 recorded tests and the expensive eval.
+# Catches a regression in the executor's mechanism (tool-use extraction,
+# serialization, parse round-trip) without running the full quality eval.
+# Drives `run_conflict_check` (the sync surface — the second
+# `parse_judgment_response` consumer).
+# =========================================================================== #
+
+
+def test_live_canary_single_batch(conflict_index):
+    """One live judgment batch: asserts stop_reason, parse success, and the P4a discriminator."""
+    store, provider, vstore, entries_by_slug, _ = conflict_index
+    oracle = H.load_semantic_oracle()
+
+    # Pick a fixture that is expected to reach the judge (not a declared drop).
+    fx = next(
+        f for f in oracle["conflict"]
+        if f["expected_candidate_judged"]
+    )
+    entry = entries_by_slug[fx["proposal"]]
+
+    with skip_on_embed_quota():
+        result = conflict.run_conflict_check(
+            entry,
+            embed_provider=provider,
+            vector_store=vstore,
+            store=store,
+            judge=CH.make_live_judge(),
+        )
+
+    if isinstance(result, Unavailable):
+        from mitos.conflict import JUDGMENT_DEFECT_REASONS
+        if result.reason in JUDGMENT_DEFECT_REASONS:
+            pytest.fail(
+                f"live canary: Unavailable(reason={result.reason.value}) — "
+                f"CODE DEFECT. detail: {result.detail}"
+            )
+        pytest.skip(
+            f"live canary: Unavailable(reason={result.reason.value}) — "
+            f"environmental. detail: {result.detail}"
+        )
+
+    assert result.execution is not None, "expected a live judgment execution"
+    assert result.execution.stop_reason != "max_tokens", (
+        f"live canary: stop_reason={result.execution.stop_reason!r} — "
+        f"the judge's response was truncated. The executor's budget or "
+        f"tool schema may have regressed."
+    )
+
+    from mitos.conflict import parse_judgment_response
+    parsed = parse_judgment_response(
+        result.execution.raw_text,
+        [p.candidate.slug for p in result.judged_pairs],
+    )
+    assert not isinstance(parsed, Unavailable), (
+        f"live canary: parse_judgment_response returned Unavailable — "
+        f"detail: {parsed.detail}"
+    )
+    assert isinstance(parsed, list) and len(parsed) > 0
+
+    print(
+        f"\n[P4c canary] stop_reason={result.execution.stop_reason}, "
+        f"parsed {len(parsed)} verdicts, "
+        f"tokens={result.execution.token_output}"
+    )

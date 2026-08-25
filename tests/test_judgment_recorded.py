@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from mitos.conflict import (
     ConflictUnavailableReason,
     JudgmentExecution,
@@ -112,3 +114,60 @@ def test_truncated_fixture_has_incomplete_tool_input() -> None:
     tool_blocks = [b for b in fixture["content"] if b["type"] == "tool_use"]
     assert len(tool_blocks) == 1
     assert "verdicts" not in tool_blocks[0]["input"]
+
+
+# --- Eval trigger: baseline provenance vs current code constants ---
+
+def test_baseline_provenance_matches_current_code() -> None:
+    """Detects when the committed baseline's provenance no longer matches the code.
+
+    Compares prompt_version and judgment_model_id in the golden baseline against
+    the current constants. A mismatch means the baseline was seeded under a
+    different prompt or model and needs a reviewed re-seed. Loud skip, never a
+    bare red or silent pass.
+    """
+    import os
+
+    baseline_path = os.path.join(
+        os.path.dirname(__file__), "golden", "conflict.baseline.metrics.json"
+    )
+    if not os.path.exists(baseline_path):
+        pytest.skip(
+            "no conflict.baseline.metrics.json — baseline not yet seeded; "
+            "seed with MITOS_UPDATE_BASELINE=1."
+        )
+
+    baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
+    prov = baseline.get("provenance", {})
+
+    from mitos.conflict import CONFLICT_PROMPT_VERSION
+    from mitos.models import get_model_id
+
+    current_prompt = CONFLICT_PROMPT_VERSION
+    current_model_id = get_model_id("SONNET")
+
+    baseline_prompt = prov.get("prompt_version")
+    baseline_model_id = prov.get("judgment_model_id")
+
+    mismatches = []
+    if baseline_prompt != current_prompt:
+        mismatches.append(
+            f"prompt_version: baseline={baseline_prompt!r}, "
+            f"current={current_prompt!r}"
+        )
+    if baseline_model_id is None:
+        mismatches.append(
+            "judgment_model_id absent from baseline provenance — "
+            "re-seed required (field was added in 0.17.0)"
+        )
+    elif baseline_model_id != current_model_id:
+        mismatches.append(
+            f"judgment_model_id: baseline={baseline_model_id!r}, "
+            f"current={current_model_id!r}"
+        )
+
+    if mismatches:
+        pytest.skip(
+            "baseline provenance does not match current code — re-seed pending:\n  "
+            + "\n  ".join(mismatches)
+        )
