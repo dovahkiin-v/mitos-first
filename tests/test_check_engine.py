@@ -42,8 +42,10 @@ from mitos.check import (
     CheckPlan,
     CheckRunResult,
     ReusedPair,
+    exit_code_for,
     execute_corpus_check,
     plan_corpus_check,
+    run_degradations,
 )
 from mitos.conflict import (
     CONFLICT_PROMPT_VERSION,
@@ -492,12 +494,18 @@ def test_judgment_trip_on_first_batch_skips_remainder_and_keeps_reused_findings(
     assert [b["batch_id"] for b in _batches(temp_telemetry)] == ["seed-standing"]
 
 
-def test_parse_malformation_trips_and_persists_nothing_for_the_bad_batch(
+def test_parse_malformation_isolates_the_bad_batch_and_keeps_judging(
     temp_store: GraphStore, temp_telemetry: TelemetryStore
 ) -> None:
-    """§9-4: a garbage response on the first batch is the same trip — billed but
-    unpersisted (all-or-nothing parse), zero rows for the bad batch, remainder
-    never judged."""
+    """§9-4: a garbage response on the first batch is ISOLATED, not a trip — billed
+    but unpersisted (all-or-nothing parse), zero rows for the bad batch, and the
+    SECOND batch is still judged and persisted.
+
+    ``JUDGMENT`` is a first-attempt reason: the parse never reaches the executor's
+    retry ladder, so one malformed response is evidence about that batch's content
+    and says nothing about the next batch. Isolating it banks the verdicts the
+    pre-0.17.3 trip discarded.
+    """
     import dataclasses
 
     _, neighbourhoods = _disjoint_pairs_corpus(temp_store, 2)
@@ -511,12 +519,142 @@ def test_parse_malformation_trips_and_persists_nothing_for_the_bad_batch(
         plan, judge=judge, telemetry=temp_telemetry, store=temp_store
     )
 
-    assert judge.calls == 1
-    assert result.judgment_degraded is not None
+    assert judge.calls == 2                      # batch 2 still fired
+    assert result.judgment_abort is None         # the loop ran to the end
+    assert result.judgment_degraded is not None  # …and the run is STILL degraded
     assert result.judgment_degraded.reason is ConflictUnavailableReason.JUDGMENT
-    assert (result.batches_planned, result.batches_executed, result.batches_skipped) == (2, 1, 1)
-    assert result.pairs_judged_fresh == 0 and result.findings == ()
-    assert _batches(temp_telemetry) == [] and _rows(temp_telemetry) == []
+    assert len(result.judgment_failures) == 1
+    assert (
+        result.batches_planned,
+        result.batches_executed,
+        result.batches_failed,
+        result.batches_skipped,
+    ) == (2, 2, 1, 0)
+    assert result.batches_judged == 1            # the coverage numerator
+    assert result.pairs_judged_fresh == 1        # only the healthy batch's pair
+    # Exactly the healthy batch landed — the malformed one persisted nothing.
+    assert [b["batch_id"] for b in _batches(temp_telemetry)] == ["malformed-1"]
+    assert [r["batch_id"] for r in _rows(temp_telemetry)] == ["malformed-1"]
+    # Fail-closed is untouched: an isolated failure still emits the token and still
+    # exits 2 — isolation banks work, it never softens partial into "mostly fine".
+    # (Membership, not equality: this fixture's corpus also carries a stale-index
+    # backlog, which is a different degradation class and not this row's claim.)
+    assert "judgment" in run_degradations(result)
+    assert exit_code_for(result) == 2
+
+
+def test_scattered_isolated_failures_never_abort_and_bank_every_healthy_batch(
+    temp_store: GraphStore, temp_telemetry: TelemetryStore
+) -> None:
+    """P3: isolated failures separated by judged batches never reach the breaker.
+
+    Five groups, truncation on batches 0, 2 and 4 — three first-attempt failures,
+    but never three in a row, because a judged batch clears the streak. The run
+    finishes, banks both healthy batches, and stays degraded.
+    """
+    _, neighbourhoods = _disjoint_pairs_corpus(temp_store, 5)
+    plan = _plan(temp_store, neighbourhoods, temp_telemetry)
+    assert len(plan.fresh_groups) == 5
+
+    truncated = Unavailable(
+        reason=ConflictUnavailableReason.JUDGMENT_TRUNCATED, detail="over budget"
+    )
+    judge = _canned_judge(
+        plan, batch_prefix="scatter",
+        overrides={0: truncated, 2: truncated, 4: truncated},
+    )
+    result = execute_corpus_check(
+        plan, judge=judge, telemetry=temp_telemetry, store=temp_store
+    )
+
+    assert judge.calls == 5                      # every batch attempted
+    assert result.judgment_abort is None         # the breaker never tripped
+    assert len(result.judgment_failures) == 3
+    assert (
+        result.batches_executed,
+        result.batches_failed,
+        result.batches_judged,
+        result.batches_skipped,
+    ) == (5, 3, 2, 0)
+    assert [b["batch_id"] for b in _batches(temp_telemetry)] == [
+        "scatter-1", "scatter-3",
+    ]
+    # The truncation cause is named even though it never stopped the run — the
+    # token is scanned across every failure, not read off the aborting one.
+    assert "judgment_truncated" in run_degradations(result)
+    assert exit_code_for(result) == 2
+
+
+def test_three_consecutive_isolated_failures_trip_the_breaker_and_abort(
+    temp_store: GraphStore, temp_telemetry: TelemetryStore
+) -> None:
+    """P3: a first-attempt class that IS systematic is convicted after three in a row.
+
+    Five groups, batch 0 healthy then 1/2/3 truncated. The third consecutive
+    failure aborts, so batch 4 is never rendered or judged — the bound that keeps a
+    systematic prompt defect from buying 360 full-price judge calls for zero
+    verdicts. The healthy prefix is already banked.
+    """
+    _, neighbourhoods = _disjoint_pairs_corpus(temp_store, 5)
+    plan = _plan(temp_store, neighbourhoods, temp_telemetry)
+    assert len(plan.fresh_groups) == 5
+
+    truncated = Unavailable(
+        reason=ConflictUnavailableReason.JUDGMENT_TRUNCATED, detail="over budget"
+    )
+    judge = _canned_judge(
+        plan, batch_prefix="streak",
+        overrides={1: truncated, 2: truncated, 3: truncated},
+    )
+    result = execute_corpus_check(
+        plan, judge=judge, telemetry=temp_telemetry, store=temp_store
+    )
+
+    assert judge.calls == 4                      # batch 4 never fired
+    assert result.judgment_abort is truncated    # the third one convicted the rest
+    # The abort is always the LAST recorded failure (the CheckRunResult contract).
+    assert result.judgment_failures[-1] is result.judgment_abort
+    assert (
+        result.batches_executed,
+        result.batches_failed,
+        result.batches_judged,
+        result.batches_skipped,
+    ) == (4, 3, 1, 1)
+    assert [b["batch_id"] for b in _batches(temp_telemetry)] == ["streak-0"]
+    assert exit_code_for(result) == 2
+
+
+def test_ladder_exhausted_failure_aborts_on_the_first_one_not_the_third(
+    temp_store: GraphStore, temp_telemetry: TelemetryStore
+) -> None:
+    """P3: the breaker is for FIRST-ATTEMPT reasons only — a ladder-exhausted one
+    already carries its evidence and must not buy two more ~183s waits to confirm it.
+
+    The discriminating row against a build that applied the consecutive counter
+    uniformly: with three groups left after the failure, a uniform counter would
+    fire two more batches before stopping.
+    """
+    _, neighbourhoods = _disjoint_pairs_corpus(temp_store, 4)
+    plan = _plan(temp_store, neighbourhoods, temp_telemetry)
+    assert len(plan.fresh_groups) == 4
+
+    exhausted = Unavailable(
+        reason=ConflictUnavailableReason.JUDGMENT_TIMEOUT,
+        detail="judgment failed after 9 attempts over 183s",
+    )
+    judge = _canned_judge(plan, batch_prefix="ladder", overrides={1: exhausted})
+    result = execute_corpus_check(
+        plan, judge=judge, telemetry=temp_telemetry, store=temp_store
+    )
+
+    assert judge.calls == 2                      # stopped at the failure, not after 3
+    assert result.judgment_abort is exhausted
+    assert (
+        result.batches_executed,
+        result.batches_failed,
+        result.batches_judged,
+        result.batches_skipped,
+    ) == (2, 1, 1, 2)
 
 
 # --------------------------------------------------------------------------- #

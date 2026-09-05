@@ -98,6 +98,7 @@ from mitos.conflict import (
     CONFLICT_TOP_K,
     Candidate,
     ConflictUnavailableReason,
+    FIRST_ATTEMPT_JUDGMENT_REASONS,
     JudgmentExecution,
     RenderedPrompt,
     Unavailable,
@@ -590,6 +591,21 @@ CHECK_CONFIRM_BATCHES = 10
 # forward wiring, unconsumed in-phase).
 CHECK_STALE_RETRY_TOLERANCE = 3
 
+# The isolation breaker: this many CONSECUTIVE first-attempt batch failures convict
+# the remainder and abort the run. It is the evidence threshold that a per-batch
+# failure class is in fact systematic — one truncated batch says something about that
+# batch's content, three in a row say something about the prompt. Ladder-exhausted
+# failures never reach it (they abort on the first one — they already carry that
+# evidence, bought with ~183s of backoff).
+#
+# Deliberately low, because per-batch persistence makes an abort resumable: banked
+# verdicts are reused on the next run, so a wrong abort costs one re-run of the
+# remainder rather than the whole corpus. There is no abort-cost cliff to hedge
+# against, and the hazard it bounds is real spend — 3 batches of discovery is ~$0.08
+# where an unbounded continue on a systematic defect is a full corpus of judge calls
+# (~$9) for zero verdicts.
+_MAX_CONSECUTIVE_BATCH_FAILURES = 3
+
 
 def _utc_now_iso() -> str:
     """One UTC ISO-8601 stamp — µs precision + ``+00:00`` offset (MI-10).
@@ -880,9 +896,18 @@ class CheckRunResult:
         batches_executed: Batches on which a judge call was fired — includes a
             batch whose execution or parse then failed (billed but unpersisted is
             a named cost, not a silent drop).
-        batches_skipped: Batches never rendered or judged after a judgment trip.
-        judgment_degraded: The tripping judgment failure (executor error/timeout
-            or parse malformation), or the judge-absent degradation.
+        batches_failed: Executed batches that persisted no verdicts — the isolated
+            failures plus the aborting one. ``batches_executed - batches_failed``
+            is the coverage numerator (:attr:`batches_judged`).
+        batches_skipped: Batches never rendered or judged, because an abort-class
+            failure stopped the remainder.
+        judgment_failures: EVERY judgment-stage degradation this run recorded, in
+            occurrence order — the isolated per-batch failures, the aborting one,
+            and the judge-absent degradation. Non-empty ⇒ the run is degraded
+            (:func:`run_degradations` reads it), whether or not it aborted.
+        judgment_abort: The failure that stopped the remaining batches, or ``None``
+            when the loop ran to the end. Always the LAST element of
+            ``judgment_failures`` when set.
         reuse_unavailable: Echoed from the plan.
         telemetry_write_failures: Per-batch write-failure details (KD6 — the run
             is degraded but the judgment loop never aborts; findings still report).
@@ -906,12 +931,35 @@ class CheckRunResult:
     pairs_reused: int
     batches_planned: int
     batches_executed: int
+    batches_failed: int
     batches_skipped: int
-    judgment_degraded: Optional[Unavailable]
+    judgment_failures: Tuple[Unavailable, ...]
+    judgment_abort: Optional[Unavailable]
     reuse_unavailable: Optional[ReuseUnavailable]
     telemetry_write_failures: Tuple[str, ...]
     start_probe: StaleProbe
     end_probe: "StaleProbe | ProbeUnavailable"
+
+    @property
+    def judgment_degraded(self) -> Optional[Unavailable]:
+        """The FIRST judgment failure, or ``None`` when judgment stayed healthy.
+
+        The shipped spelling of "did the judgment stage degrade, and on what" —
+        kept as a derived view once ``judgment_failures`` went plural, so a reader
+        asking that question is never handed only the aborting failure (under
+        isolation an earlier, isolated failure is the more informative one).
+        """
+        return self.judgment_failures[0] if self.judgment_failures else None
+
+    @property
+    def batches_judged(self) -> int:
+        """Batches whose verdicts parsed and persisted — the coverage numerator.
+
+        The disclosed "judged N of M batches" number (3a renders it; the ``--json``
+        receipt carries both halves). Derived here rather than counted in the loop
+        so it can never disagree with the executed/failed accounting.
+        """
+        return self.batches_executed - self.batches_failed
 
 
 def _finding(
@@ -1116,11 +1164,32 @@ def execute_corpus_check(
     Then, per fresh group in plan order: build both sides' ``JudgeInput`` via the
     node adapter → render → ``judge(prompt)`` → parse → the one KD4 gate per pair →
     **persist THIS batch now** (P5 — a killed run loses nothing already judged; the
-    re-run's reuse partition absorbs the persisted prefix). The first batch-level
-    :class:`Unavailable` — an executor error/timeout OR an all-or-nothing parse
-    malformation — trips the remainder: later groups are never rendered or judged
-    (one penalty per run; a malformed batch is billed but unpersisted, a named
-    cost). A telemetry write failure degrades the RUN, never the loop (KD6): the
+    re-run's reuse partition absorbs the persisted prefix).
+
+    A batch-level :class:`Unavailable` — an executor error/timeout OR an
+    all-or-nothing parse malformation — is dispositioned by CLASS, on how much the
+    failure says about the batches after it (a malformed batch is billed but
+    unpersisted either way, a named cost):
+
+    * A reason in ``conflict.FIRST_ATTEMPT_JUDGMENT_REASONS`` is **isolated**: the
+      batch is counted in ``batches_failed``, the run is degraded, and the loop
+      keeps judging. The executor decided it from the one response that came back
+      and never consulted its retry ladder, so it is evidence about this batch's
+      content — not about the next batch. Isolating it banks the verdicts a trip
+      would have discarded.
+    * Any other reason **aborts** on the first occurrence: it exhausted the
+      executor's retry ladder (~183s across nine attempts), which is evidence the
+      cause is systematic, and 359 more batches would buy the same outcome at 359×
+      the wait.
+    * ``_MAX_CONSECUTIVE_BATCH_FAILURES`` consecutive isolated failures abort too —
+      the threshold at which a per-batch class has shown itself to be systematic
+      after all. A judged batch clears the streak.
+
+    On an abort the remaining groups are never rendered or judged
+    (``batches_skipped``), and ``judgment_abort`` names the failure that stopped
+    it; ``judgment_failures`` carries every failure either way.
+
+    A telemetry write failure degrades the RUN, never the loop (KD6): the
     failure is recorded per batch, the judgment still reports as findings, and
     later batches are still judged AND their writes attempted (each write is
     independent — a transient lock may clear).
@@ -1175,10 +1244,25 @@ def execute_corpus_check(
     """
     findings: List[CheckFinding] = []
     write_failures: List[str] = []
-    judgment_degraded: Optional[Unavailable] = None
+    judgment_failures: List[Unavailable] = []
+    judgment_abort: Optional[Unavailable] = None
+    consecutive_failures = 0
     batches_executed = 0
+    batches_failed = 0
     batches_skipped = 0
     pairs_judged_fresh = 0
+
+    def record_batch_failure(failure: Unavailable) -> None:
+        """Files one batch failure — isolating it, or tripping the abort."""
+        nonlocal judgment_abort, batches_failed, consecutive_failures
+        judgment_failures.append(failure)
+        batches_failed += 1
+        consecutive_failures += 1
+        if (
+            failure.reason not in FIRST_ATTEMPT_JUDGMENT_REASONS
+            or consecutive_failures >= _MAX_CONSECUTIVE_BATCH_FAILURES
+        ):
+            judgment_abort = failure
 
     # Reused verdicts first — findings at zero spend. The gate re-derives from the
     # raw stored verdict (KD4); a tenable or below-threshold prior stays silent.
@@ -1199,17 +1283,20 @@ def execute_corpus_check(
         )
 
     if judge is None and plan.fresh_groups:
-        judgment_degraded = Unavailable(
+        # Not a batch failure — no batch was ever attempted, so it bypasses
+        # `record_batch_failure` (nothing to isolate) and aborts outright.
+        judgment_abort = Unavailable(
             reason=ConflictUnavailableReason.JUDGMENT,
             detail=(
                 f"no judge available for {len(plan.fresh_groups)} pending fresh "
                 "batch(es); fresh judgment skipped, reused findings unaffected"
             ),
         )
+        judgment_failures.append(judgment_abort)
 
     for group in plan.fresh_groups:
-        if judgment_degraded is not None:
-            batches_skipped += 1  # never rendered, never judged — the trip holds
+        if judgment_abort is not None:
+            batches_skipped += 1  # never rendered, never judged — the abort holds
             continue
 
         proposal_input = judge_input_from_node(group.proposal_node)
@@ -1232,7 +1319,7 @@ def execute_corpus_check(
         execution = judge(prompt)
         batches_executed += 1
         if isinstance(execution, Unavailable):
-            judgment_degraded = execution  # the first failure trips the remainder
+            record_batch_failure(execution)  # isolated, or the abort — by class
             continue
         # KD5, alias half — before parse/persist: rows at a pin the partition was
         # not computed at would poison every later run's reuse join.
@@ -1245,8 +1332,10 @@ def execute_corpus_check(
 
         judgments = parse_judgment_response(execution.raw_text, partner_slugs)
         if isinstance(judgments, Unavailable):
-            judgment_degraded = judgments  # billed but unpersisted — a named cost
+            record_batch_failure(judgments)  # billed but unpersisted — a named cost
             continue
+
+        consecutive_failures = 0  # a judged batch clears the streak
 
         # One MI-10 stamp per batch, taken at persist time — shared by the batch's
         # rows and by its fresh findings' provenance.
@@ -1350,8 +1439,10 @@ def execute_corpus_check(
         pairs_reused=len(plan.reused),
         batches_planned=len(plan.fresh_groups),
         batches_executed=batches_executed,
+        batches_failed=batches_failed,
         batches_skipped=batches_skipped,
-        judgment_degraded=judgment_degraded,
+        judgment_failures=tuple(judgment_failures),
+        judgment_abort=judgment_abort,
         reuse_unavailable=plan.reuse_unavailable,
         telemetry_write_failures=tuple(write_failures),
         start_probe=plan.start_probe,
@@ -1388,7 +1479,10 @@ def run_degradations(result: CheckRunResult) -> Tuple[str, ...]:
     degradation class present:
 
     * ``"sweep"`` — the sweep tripped (``sweep_degraded``).
-    * ``"judgment"`` — the judgment stage tripped (``judgment_degraded``).
+    * ``"judgment"`` — the judgment stage degraded: ANY batch failure, whether it
+      was isolated or aborted the run (``judgment_failures``). Read off the full
+      set, never off the aborting one — a run that isolated two bad batches and
+      finished the other 358 is still partial and must not certify (CHK-C2).
     * ``"reuse_read"`` — the reuse/novelty bulk read failed (``reuse_unavailable``).
     * ``"telemetry_write"`` — at least one per-batch persist failed.
     * ``"stale_index"`` — a TRANSIENT backlog row in the start probe, or in the
@@ -1403,9 +1497,11 @@ def run_degradations(result: CheckRunResult) -> Tuple[str, ...]:
       trend query on the shipped token stays complete. Derived from the typed
       reason, not from "any vector fault" — a plain ``VectorStoreError`` still
       produces ``"sweep"`` alone.
-    * ``"judgment_truncated"`` — the judgment was truncated at ``max_tokens``.
-      Emitted alongside ``"judgment"`` (same precedent as ``"collection_missing"``
-      alongside ``"sweep"``).
+    * ``"judgment_truncated"`` — at least one batch was truncated at
+      ``max_tokens``. Emitted alongside ``"judgment"`` (same precedent as
+      ``"collection_missing"`` alongside ``"sweep"``). Scanned across every
+      failure, not just the first: under isolation the truncation that names the
+      cause is rarely the one that stopped the run.
 
     Args:
         result: The typed run outcome.
@@ -1415,7 +1511,7 @@ def run_degradations(result: CheckRunResult) -> Tuple[str, ...]:
     """
     present = {
         "sweep": result.sweep_degraded is not None,
-        "judgment": result.judgment_degraded is not None,
+        "judgment": bool(result.judgment_failures),
         "reuse_read": result.reuse_unavailable is not None,
         "telemetry_write": bool(result.telemetry_write_failures),
         "stale_index": bool(result.start_probe.transient)
@@ -1429,10 +1525,9 @@ def run_degradations(result: CheckRunResult) -> Tuple[str, ...]:
             and result.sweep_degraded.reason
             is ConflictUnavailableReason.COLLECTION_MISSING
         ),
-        "judgment_truncated": (
-            result.judgment_degraded is not None
-            and result.judgment_degraded.reason
-            is ConflictUnavailableReason.JUDGMENT_TRUNCATED
+        "judgment_truncated": any(
+            failure.reason is ConflictUnavailableReason.JUDGMENT_TRUNCATED
+            for failure in result.judgment_failures
         ),
     }
     return tuple(token for token in _DEGRADATION_TOKENS if present[token])

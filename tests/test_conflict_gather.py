@@ -555,3 +555,49 @@ def test_judgment_defect_environment_partition_is_exhaustive() -> None:
     assert defect | environment == set(JUDGMENT_REASONS)
     assert defect & environment == set()
     assert defect and environment
+
+
+def test_ladder_partition_is_exhaustive_and_matches_the_executors_return_sites() -> None:
+    """Every JUDGMENT_REASONS member is filed as ladder-exhausted or first-attempt.
+
+    ``check.execute_corpus_check`` isolates a batch iff its reason is first-attempt,
+    so a new member left unfiled would silently take the abort branch. The partition
+    is asserted against the executor's own source, not against the defect/environment
+    split it currently coincides with: the load-bearing fact is WHERE each reason is
+    returned — ``JUDGMENT_TIMEOUT`` from the retry loop's ``else`` (all attempts
+    exhausted), the other two from past its ``break`` (one response, no retries).
+    """
+    import inspect
+
+    from mitos import conflict_judgment
+    from mitos.conflict import (
+        FIRST_ATTEMPT_JUDGMENT_REASONS,
+        JUDGMENT_REASONS,
+        LADDER_EXHAUSTED_JUDGMENT_REASONS,
+    )
+
+    ladder = set(LADDER_EXHAUSTED_JUDGMENT_REASONS)
+    first_attempt = set(FIRST_ATTEMPT_JUDGMENT_REASONS)
+    assert ladder | first_attempt == set(JUDGMENT_REASONS)
+    assert ladder & first_attempt == set()
+    assert ladder and first_attempt
+
+    # The executor's ladder returns exactly the ladder-exhausted set. Sliced from
+    # the `for attempt_backoff` loop to the `elapsed_ms` line that follows its
+    # `else:` — everything after that point is decided from a returned response.
+    source = inspect.getsource(conflict_judgment.execute_judgment)
+    ladder_block = source[
+        source.index("for attempt_backoff"): source.index("elapsed_ms =")
+    ]
+    # Matched with the trailing comma of the `reason=` keyword: a bare name match
+    # makes JUDGMENT a substring of JUDGMENT_TIMEOUT and the row passes vacuously.
+    named_in_ladder = {
+        reason
+        for reason in JUDGMENT_REASONS
+        if f"ConflictUnavailableReason.{reason.name}," in ladder_block
+    }
+    assert named_in_ladder == ladder, (
+        "the executor's retry ladder returns a reason LADDER_EXHAUSTED_JUDGMENT_"
+        "REASONS does not list (or lists one it does not return) — check.py's "
+        "isolation branch reads that tuple as a fact about this code"
+    )

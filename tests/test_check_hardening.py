@@ -88,7 +88,8 @@ PRODUCTION_ALIAS = "SONNET"
 _CORPUS_JSON_KEYS = {
     "run_id", "mode", "exit_code", "started_at", "ended_at", "fresh",
     "nodes_total", "nodes_swept", "pairs_judged_fresh", "pairs_reused",
-    "batches_planned", "batches_executed", "batches_skipped", "findings",
+    "batches_planned", "batches_executed", "batches_judged", "batches_failed",
+    "batches_skipped", "findings",
     "findings_new", "findings_known", "degradations", "coverage_exclusions",
     "index_backlog_transient", "summary_row_written",
     "project", "collection", "workspace",
@@ -561,6 +562,93 @@ def test_t5_judgment_fails_at_batch_k_persists_k_minus_one(
     assert len(obj["findings"]) >= 1                     # the first (healthy) batch's finding rides, partial
     # Per-batch persistence: exactly the ONE healthy batch's rows landed (k-1 = 1).
     assert len(_read_batch_rows(config)) == 1
+
+
+def _wire_isolated_truncation(workspace, monkeypatch):
+    """Wires a 3-group corpus whose SECOND batch truncates — the isolation scenario.
+
+    ``JUDGMENT_TRUNCATED`` is a first-attempt reason, so the engine isolates that
+    batch and keeps judging: 3 executed, 1 failed, 2 judged, 0 skipped. Shared by
+    the receipt row and the text-report row so the two cannot drift apart on which
+    scenario they describe.
+    """
+    config, store, telemetry = workspace
+    pairs = [
+        ("g1", "First finder axiom.", "h1", "First target axiom."),
+        ("g2", "Second finder axiom.", "h2", "Second target axiom."),
+        ("g3", "Third finder axiom.", "h3", "Third target axiom."),
+    ]
+    nbhds: Dict[str, List[Dict[str, Any]]] = {}
+    for f_slug, f_ax, t_slug, t_ax in pairs:
+        _commit(store, f_slug, f_ax)
+        _commit(store, t_slug, t_ax)
+        nbhds[f_ax] = [_match(t_slug, 0.9)]
+        nbhds[t_ax] = []
+    _drain_outbox(store)
+    embed, vector = _wire_substrate(monkeypatch, nbhds)
+    plan = check.plan_corpus_check(
+        store=store, embed_provider=embed, vector_store=vector, telemetry=telemetry,
+        model_alias=PRODUCTION_ALIAS,
+    )
+    assert len(plan.fresh_groups) == 3
+    judge = _canned_judge(
+        plan, tenable=False, confidence=0.9,
+        overrides={1: Unavailable(reason=ConflictUnavailableReason.JUDGMENT_TRUNCATED,
+                                  detail="batch 2 truncated at max_tokens")},
+    )
+    _wire_judge(monkeypatch, judge)
+    return config, judge
+
+
+def test_t5_isolated_batch_failure_states_coverage_on_the_text_report(
+    workspace, monkeypatch, capsys,
+) -> None:
+    """The coverage number is on the HUMAN surface too, not only in ``--json``.
+
+    A partial audit that says only "[partial]" leaves the reader unable to tell one
+    bad batch from a dead run — the number is what makes the difference legible.
+    """
+    config, judge = _wire_isolated_truncation(workspace, monkeypatch)
+
+    code = cli.cmd_check(
+        config, scope=None, fresh=False, assume_yes=False, as_json=False
+    )
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "[partial] This check could not fully run" in out
+    assert "Judged 2 of 3 judgment batches (1 failed)." in out
+    assert "Traceback" not in out
+
+
+def test_t5_isolated_batch_failure_reports_coverage_and_still_exits_2(
+    workspace, monkeypatch, capsys,
+) -> None:
+    """P3 at the surface: a truncated batch 2 of 3 is ISOLATED — batch 3 is still
+    judged and persisted, the receipt states coverage as a NUMBER, and the run is
+    still fail-closed at exit 2 with the ``judgment`` token.
+
+    The pair to ``test_t5_judgment_fails_at_batch_k_persists_k_minus_one``, which
+    keeps the aborting (ladder-exhausted) case. Together they pin both sides of the
+    class split at the surface a caller actually reads.
+    """
+    config, judge = _wire_isolated_truncation(workspace, monkeypatch)
+
+    code = cli.cmd_check(config, scope=None, fresh=False, assume_yes=False, as_json=True)
+
+    assert code == 2                                     # fail-closed is untouched
+    obj = json.loads(capsys.readouterr().out)
+    assert set(obj.keys()) == _CORPUS_JSON_KEYS          # machine-stable under isolation
+    assert obj["degradations"] == ["judgment", "judgment_truncated"]
+    assert judge.calls == 3                              # batch 3 fired — the isolation
+    assert obj["batches_executed"] == 3
+    assert obj["batches_failed"] == 1                    # the truncated one, billed…
+    assert obj["batches_judged"] == 2                    # …and coverage IS a number
+    assert obj["batches_skipped"] == 0                   # nothing was discarded
+    assert obj["batches_planned"] == obj["batches_executed"] + obj["batches_skipped"]
+    # TWO batches' rows landed — the second healthy batch is exactly what the
+    # pre-0.17.3 trip threw away.
+    assert len(_read_batch_rows(config)) == 2
 
 
 def test_t5_corrupt_telemetry_read_falls_back_to_fresh_unpartitioned_exit_2(

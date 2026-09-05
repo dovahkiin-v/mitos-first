@@ -7,12 +7,12 @@
     "url": "https://github.com/dovahkiin-v/mitos",
     "source": "github"
   },
-  "version": "0.17.2",
+  "version": "0.17.3",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mitos-adr",
-      "version": "0.17.2",
+      "version": "0.17.3",
       "transport": { "type": "stdio" }
     }
   ]

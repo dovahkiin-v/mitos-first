@@ -4277,6 +4277,8 @@ def _check_json_object(
         "pairs_reused": result.pairs_reused,
         "batches_planned": result.batches_planned,
         "batches_executed": result.batches_executed,
+        "batches_judged": result.batches_judged,
+        "batches_failed": result.batches_failed,
         "batches_skipped": result.batches_skipped,
         "findings": [_check_finding_json(f) for f in result.findings],
         "findings_new": row.findings_new,
@@ -4317,7 +4319,7 @@ def _check_degradation_summary(degradations: Tuple[str, ...]) -> str:
     by re-parsing ``degraded_reason``)."""
     words = {
         "sweep": "the corpus sweep degraded mid-run",
-        "judgment": "the judgment stage could not complete",
+        "judgment": "some judgment batches did not complete",
         "reuse_read": "prior-verdict history was unreadable (findings shown unpartitioned)",
         "telemetry_write": "some per-batch results could not be recorded",
         "stale_index": "the vector index is behind (recall may be thinned)",
@@ -4380,6 +4382,17 @@ def _print_check_report(
               f"({_check_degradation_summary(degradations)}).")
         print(f"  Swept {result.nodes_swept} of {result.nodes_total} decisions; any "
               f"findings above are labeled partial, not certified complete.")
+        # Coverage is a NUMBER whenever judgment fell short of the plan — a partial
+        # audit that only says "partial" leaves the reader unable to tell one bad
+        # batch from a dead run.
+        if result.batches_judged < result.batches_planned:
+            shortfall = []
+            if result.batches_failed:
+                shortfall.append(f"{result.batches_failed} failed")
+            if result.batches_skipped:
+                shortfall.append(f"{result.batches_skipped} never attempted")
+            print(f"  Judged {result.batches_judged} of {result.batches_planned} "
+                  f"judgment batches ({', '.join(shortfall)}).")
 
     if not row_written:
         print("  Note: this run was not recorded to check history "

@@ -122,9 +122,13 @@ class ConflictUnavailableReason(Enum):
     notice; the core never formats UX text (core/surface bulkhead, CONF-D10).
 
     A new member is only half a decision: every member must also be classified into
-    exactly one of the two buckets below, and
+    exactly one of the two top-level buckets below, and
     ``test_every_unavailable_reason_is_classified_into_exactly_one_bucket`` fails
-    until it is.
+    until it is. A new JUDGMENT-side member owes THREE filings, one per partition —
+    defect-vs-environment, ladder-vs-first-attempt, and the top-level bucket — each
+    with its own exhaustiveness row in ``test_conflict_gather.py``. They are not
+    interchangeable: the second one decides whether ``check``'s corpus loop isolates
+    a failed batch or abandons the remaining ones.
     """
 
     EMBEDDING = "embedding_unavailable"        # Gemini embed raised (S1).
@@ -165,6 +169,30 @@ JUDGMENT_DEFECT_REASONS: Tuple[ConflictUnavailableReason, ...] = (
 )
 JUDGMENT_ENVIRONMENT_REASONS: Tuple[ConflictUnavailableReason, ...] = (
     ConflictUnavailableReason.JUDGMENT_TIMEOUT,
+)
+
+# Ladder-vs-first-attempt partition: did the executor consult its retry ladder before
+# returning this reason? A ladder-exhausted reason survived nine attempts across ~183s
+# of backoff (``conflict_judgment._RETRY_BACKOFFS_S``), which is evidence the cause is
+# systematic — the next batch will meet it too. A first-attempt reason carries no such
+# evidence: truncation is decided from the one response that came back
+# (``conflict_judgment.py:198``, past the loop's ``break``), a missing tool_use block
+# the same way (``:213``), and a parse malformation never reaches the executor at all —
+# each varies with the batch's own content. ``check.execute_corpus_check`` reads this to
+# decide whether ONE batch's failure convicts the remaining batches.
+#
+# These two happen to hold the same members as the defect/environment split above, and
+# that coincidence is not the reason either exists: defect/environment answers "must a
+# test fail or may it skip", this answers "how much evidence does this failure carry
+# about the next batch". They are declared separately so a divergence — a retried
+# truncation, a first-attempt reason for a permanent API rejection — moves one partition
+# without silently moving the other.
+LADDER_EXHAUSTED_JUDGMENT_REASONS: Tuple[ConflictUnavailableReason, ...] = (
+    ConflictUnavailableReason.JUDGMENT_TIMEOUT,
+)
+FIRST_ATTEMPT_JUDGMENT_REASONS: Tuple[ConflictUnavailableReason, ...] = (
+    ConflictUnavailableReason.JUDGMENT,
+    ConflictUnavailableReason.JUDGMENT_TRUNCATED,
 )
 
 
